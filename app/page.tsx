@@ -3,7 +3,7 @@ const games = [
   { slug: "rps", name: "Rock, paper, scissors", players: "Best of 5", ready: true },
   { slug: "chess", name: "Chess", players: "1v1 ranked", ready: true },
   { slug: "poker", name: "Poker", players: "2-6 players", ready: false },
-  { slug: "hokm", name: "Hokm", players: "4 players", ready: false },
+  { slug: "hokm", name: "Hokm", players: "4 players", ready: true },
   { slug: "shelem", name: "Shelem", players: "4 players", ready: false },
   { slug: "ludo", name: "Ludo", players: "2-4 players", ready: false },
   { slug: "snake_ladder", name: "Snakes & ladders", players: "2-4 players", ready: false }
