@@ -1,0 +1,8 @@
+node_modules
+.next
+.env.local
+.env.staging
+.env.production
+.vercel
+.DS_Store
+*.log
