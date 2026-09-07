@@ -6,7 +6,7 @@ const games = [
   { slug: "hokm", name: "Hokm", players: "4 players", ready: true },
   { slug: "shelem", name: "Shelem", players: "4 players", ready: false },
   { slug: "ludo", name: "Ludo", players: "2-4 players", ready: false },
-  { slug: "snake_ladder", name: "Snakes & ladders", players: "2-4 players", ready: false }
+  { slug: "snake_ladder", name: "Snakes & ladders", players: "2-4 players", ready: true }
 ];
 export default function HomePage() {
   return (
