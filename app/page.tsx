@@ -1,15 +1,13 @@
 import Link from "next/link";
-
 const games = [
   { slug: "rps", name: "Rock, paper, scissors", players: "Best of 5", ready: true },
-  { slug: "chess", name: "Chess", players: "1v1 ranked", ready: false },
+  { slug: "chess", name: "Chess", players: "1v1 ranked", ready: true },
   { slug: "poker", name: "Poker", players: "2-6 players", ready: false },
   { slug: "hokm", name: "Hokm", players: "4 players", ready: false },
   { slug: "shelem", name: "Shelem", players: "4 players", ready: false },
   { slug: "ludo", name: "Ludo", players: "2-4 players", ready: false },
   { slug: "snake_ladder", name: "Snakes & ladders", players: "2-4 players", ready: false }
 ];
-
 export default function HomePage() {
   return (
     <div>
@@ -22,7 +20,6 @@ export default function HomePage() {
           pattern for wiring up chess, poker, and the rest.
         </p>
       </div>
-
       <p className="text-sm font-semibold mb-3">Games</p>
       <div className="grid grid-cols-2 gap-3">
         {games.map((g) => (
