@@ -2,22 +2,19 @@
 
 // app/games/chess/page.tsx
 //
-// Follows the same shape as app/games/rps/page.tsx:
-//   1. find_or_create_match() to get paired with an opponent
-//   2. subscribe to postgres_changes on `matches` (status -> active/finished)
-//   3. subscribe to postgres_changes on `chess_games` (fen/turn updates)
-//   4. send each move through the chess-move Edge Function (server-validated)
-//
-// NOTE ON IMPORTS: this assumes the same browser Supabase client your other
-// game pages use. If your project's helper lives at a different path than
-// "@/lib/supabase", update the import below to match — everything else is
-// self-contained.
+// CHANGED: click-to-move instead of drag-and-drop. Click a piece you own
+// on your turn -> its legal destination squares highlight in red -> click
+// one of them to move. Click the same piece again, or an empty/illegal
+// square, to deselect. Legal moves are computed locally with chess.js
+// (for highlighting only); the actual move is still validated server-side
+// by the chess-move Edge Function, same as before.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chess, type Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { supabase } from "@/lib/supabase/client";
 import GameNav from "@/components/GameNav";
+
 type MatchStatus = "waiting" | "active" | "finished";
 
 type MatchRow = {
@@ -33,7 +30,7 @@ type ChessGameRow = {
 };
 
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const STAKE = 0; // wired to 0 until the payment decision from README §5 is resolved
+const STAKE = 0;
 
 export default function ChessPage() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -43,12 +40,12 @@ export default function ChessPage() {
   const [turn, setTurn] = useState<"w" | "b">("w");
   const [myColor, setMyColor] = useState<"w" | "b" | null>(null);
   const [status, setStatus] = useState("در حال اتصال...");
+  const [selected, setSelected] = useState<Square | null>(null);
   const chessRef = useRef(new Chess());
 
   // 1. auth + matchmaking
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       const {
         data: { user },
@@ -77,7 +74,6 @@ export default function ChessPage() {
         setMyColor(players[0].user_id === user.id ? "w" : "b");
       }
     })();
-
     return () => {
       cancelled = true;
     };
@@ -86,22 +82,13 @@ export default function ChessPage() {
   // 2. subscribe to match status + chess board state
   useEffect(() => {
     if (!matchId) return;
-
     setStatus("در انتظار حریف...");
 
     const fetchInitial = async () => {
-      const { data: m } = await supabase
-        .from("matches")
-        .select("id, status, stake, result")
-        .eq("id", matchId)
-        .single();
+      const { data: m } = await supabase.from("matches").select("id, status, stake, result").eq("id", matchId).single();
       if (m) setMatch(m as MatchRow);
 
-      const { data: g } = await supabase
-        .from("chess_games")
-        .select("fen, turn")
-        .eq("match_id", matchId)
-        .maybeSingle();
+      const { data: g } = await supabase.from("chess_games").select("fen, turn").eq("match_id", matchId).maybeSingle();
       if (g) {
         setFen(g.fen);
         setTurn(g.turn);
@@ -125,6 +112,7 @@ export default function ChessPage() {
           setFen(row.fen);
           setTurn(row.turn);
           chessRef.current.load(row.fen);
+          setSelected(null); // clear selection whenever the board updates
         }
       )
       .subscribe();
@@ -143,28 +131,70 @@ export default function ChessPage() {
     }
   }, [match, userId]);
 
-  const onDrop = useCallback(
-    async (sourceSquare: Square, targetSquare: Square) => {
-      if (!matchId || match?.status !== "active" || turn !== myColor) return false;
+  const canMove = match?.status === "active" && turn === myColor;
 
+  // legal destination squares for the currently selected piece
+  const legalTargets: Square[] = useMemo(() => {
+    if (!selected) return [];
+    const moves = chessRef.current.moves({ square: selected, verbose: true }) as { to: Square }[];
+    return moves.map((m) => m.to);
+  }, [selected, fen]);
+
+  const submitMove = useCallback(
+    async (from: Square, to: Square) => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (!session) return false;
+      if (!session) return;
 
       const { data, error } = await supabase.functions.invoke("chess-move", {
-        body: { match_id: matchId, from: sourceSquare, to: targetSquare, promotion: "q" },
+        body: { match_id: matchId, from, to, promotion: "q" },
       });
-
       if (error || (data && (data as { error?: string }).error)) {
         console.error(error ?? (data as { error?: string }).error);
-        return false; // react-chessboard snaps the piece back
+      }
+    },
+    [matchId]
+  );
+
+  const onSquareClick = useCallback(
+    (square: Square) => {
+      if (!canMove) return;
+
+      const piece = chessRef.current.get(square);
+
+      if (selected && legalTargets.includes(square)) {
+        // move to a highlighted legal square
+        const from = selected;
+        setSelected(null);
+        submitMove(from, square);
+        return;
       }
 
-      return true;
+      if (piece && piece.color === myColor) {
+        // select (or re-select) one of my own pieces
+        setSelected((prev) => (prev === square ? null : square));
+        return;
+      }
+
+      // clicked an empty / illegal / opponent square with nothing selected — clear
+      setSelected(null);
     },
-    [matchId, match, turn, myColor]
+    [canMove, selected, legalTargets, myColor, submitMove]
   );
+
+  const customSquareStyles = useMemo(() => {
+    const styles: Record<string, React.CSSProperties> = {};
+    if (selected) {
+      styles[selected] = { backgroundColor: "rgba(255, 215, 0, 0.4)" }; // gold highlight on the selected piece
+    }
+    for (const sq of legalTargets) {
+      styles[sq] = {
+        background: "radial-gradient(circle, rgba(220,38,38,0.7) 25%, transparent 26%)",
+      }; // red dot on legal destinations
+    }
+    return styles;
+  }, [selected, legalTargets]);
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
@@ -176,12 +206,10 @@ export default function ChessPage() {
       <div className="w-full max-w-[480px]">
         <Chessboard
           position={fen}
-          onPieceDrop={(from, to) => {
-            onDrop(from as Square, to as Square);
-            return true; // optimistic UI; onDrop reverts via realtime if rejected
-          }}
+          onSquareClick={onSquareClick}
+          customSquareStyles={customSquareStyles}
           boardOrientation={myColor === "b" ? "black" : "white"}
-          arePiecesDraggable={match?.status === "active" && turn === myColor}
+          arePiecesDraggable={false}
         />
       </div>
     </div>
