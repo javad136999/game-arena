@@ -2,13 +2,21 @@
 
 // app/games/snake_ladder/page.tsx
 //
-// Simplest of the games so far: no Edge Function needed, everything goes
-// through the roll_dice() RPC (same pattern as submit_move for RPS) since
-// the rules are simple and there's no hidden information to protect — the
-// board is publicly readable, just like matches/chess_games.
+// BUGFIX: the roll_dice() RPC only creates the snake_ladder_games row on
+// the FIRST call — but the old version of this page only enabled the
+// button once that row already existed, and never watched `matches`
+// directly, so nobody could ever make the first roll and the status text
+// stayed stuck on "در انتظار حریف" forever even after the match went
+// active. Fixed by: (1) fetching match_players to know who joined first
+// (the RPC's turn_order[0]) and allowing THAT player to roll even before
+// the board row exists, and (2) subscribing to `matches` directly so the
+// status text updates the moment the match goes active.
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
+import GameNav from "@/components/GameNav";
+
+type MatchStatus = "waiting" | "active" | "finished";
 
 type BoardState = {
   positions: Record<string, number>;
@@ -23,11 +31,14 @@ const STAKE = 0; // wired to 0 until the payment decision from README §5 is res
 export default function SnakeLadderPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [matchId, setMatchId] = useState<string | null>(null);
+  const [matchStatus, setMatchStatus] = useState<MatchStatus>("waiting");
+  const [seats, setSeats] = useState<string[]>([]); // join order — seats[0] gets the first roll
   const [board, setBoard] = useState<BoardState | null>(null);
   const [status, setStatus] = useState("در حال اتصال...");
   const [error, setError] = useState<string | null>(null);
   const [rolling, setRolling] = useState(false);
 
+  // 1. auth + matchmaking
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -53,11 +64,21 @@ export default function SnakeLadderPage() {
     };
   }, []);
 
+  // 2. subscribe to match status, seating order, and the board
   useEffect(() => {
     if (!matchId) return;
-    setStatus("در انتظار حریف...");
 
     const fetchInitial = async () => {
+      const { data: m } = await supabase.from("matches").select("status").eq("id", matchId).single();
+      if (m) setMatchStatus(m.status as MatchStatus);
+
+      const { data: players } = await supabase
+        .from("match_players")
+        .select("user_id, joined_at")
+        .eq("match_id", matchId)
+        .order("joined_at", { ascending: true });
+      if (players) setSeats(players.map((p) => p.user_id as string));
+
       const { data } = await supabase.from("snake_ladder_games").select("*").eq("match_id", matchId).maybeSingle();
       if (data) setBoard(data as BoardState);
     };
@@ -65,6 +86,11 @@ export default function SnakeLadderPage() {
 
     const channel = supabase
       .channel(`sl-${matchId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "matches", filter: `id=eq.${matchId}` },
+        (payload) => setMatchStatus((payload.new as { status: MatchStatus }).status)
+      )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "snake_ladder_games", filter: `match_id=eq.${matchId}` },
@@ -78,13 +104,17 @@ export default function SnakeLadderPage() {
   }, [matchId]);
 
   useEffect(() => {
-    if (!board) return;
-    if (board.status === "finished") {
-      setStatus(board.current_turn === null ? "بازی تمام شد" : "بازی تمام شد");
-    } else {
-      setStatus(board.current_turn === userId ? "نوبت توئه — تاس بنداز" : "نوبت حریف");
+    if (matchStatus === "waiting") {
+      setStatus("در انتظار حریف...");
+      return;
     }
-  }, [board, userId]);
+    if (board?.status === "finished") {
+      setStatus("بازی تمام شد");
+      return;
+    }
+    const myTurn = board ? board.current_turn === userId : seats[0] === userId;
+    setStatus(myTurn ? "نوبت توئه — تاس بنداز" : "نوبت حریف");
+  }, [matchStatus, board, seats, userId]);
 
   const roll = async () => {
     setError(null);
@@ -96,11 +126,17 @@ export default function SnakeLadderPage() {
   };
 
   const myPos = board && userId ? board.positions[userId] ?? 0 : 0;
-  const oppId = board?.turn_order.find((id) => id !== userId);
+  const oppId = (board?.turn_order ?? seats).find((id) => id !== userId);
   const oppPos = board && oppId ? board.positions[oppId] ?? 0 : 0;
+
+  const canRoll =
+    matchStatus === "active" &&
+    board?.status !== "finished" &&
+    (board ? board.current_turn === userId : seats[0] === userId);
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
+      <GameNav />
       <h1 className="text-xl font-bold">Snakes &amp; Ladders</h1>
       <p className="text-sm text-gray-500">{status}</p>
       {error && <p className="text-xs text-red-500">{error}</p>}
@@ -112,11 +148,7 @@ export default function SnakeLadderPage() {
 
       {board?.last_roll && <p className="text-2xl">🎲 {board.last_roll}</p>}
 
-      <button
-        onClick={roll}
-        disabled={rolling || board?.status === "finished" || board?.current_turn !== userId}
-        className="rounded-lg border border-white/10 px-6 py-3 disabled:opacity-40"
-      >
+      <button onClick={roll} disabled={rolling || !canRoll} className="rounded-lg border border-white/10 px-6 py-3 disabled:opacity-40">
         {rolling ? "..." : "تاس بنداز"}
       </button>
     </div>

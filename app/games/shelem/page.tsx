@@ -1,12 +1,16 @@
 "use client";
 
 // app/games/shelem/page.tsx
-// Same shape as hokm's page, with an added bidding step before trump choice.
+// BUGFIX: same deadlock family as hokm — bidding UI needed `state` to
+// exist to know whose turn it is, but state doesn't exist until someone
+// bids. Fixed by tracking seating order independently (seats[0] always
+// bids first, per the Edge Function's convention).
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import GameNav from "@/components/GameNav";
 
+type MatchStatus = "waiting" | "active" | "finished";
 type Phase = "bidding" | "choosing_trump" | "playing" | "finished";
 type Suit = "S" | "H" | "D" | "C";
 const SUIT_LABEL: Record<Suit, string> = { S: "♠", H: "♥", D: "♦", C: "♣" };
@@ -47,6 +51,8 @@ function CardView({ card }: { card: string }) {
 export default function ShelemPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [matchId, setMatchId] = useState<string | null>(null);
+  const [matchStatus, setMatchStatus] = useState<MatchStatus>("waiting");
+  const [seats, setSeats] = useState<string[]>([]); // join order — seats[0] bids first
   const [state, setState] = useState<PublicState | null>(null);
   const [hand, setHand] = useState<string[]>([]);
   const [status, setStatus] = useState("در حال اتصال...");
@@ -78,6 +84,16 @@ export default function ShelemPage() {
     if (!matchId || !userId) return;
 
     const fetchInitial = async () => {
+      const { data: m } = await supabase.from("matches").select("status").eq("id", matchId).single();
+      if (m) setMatchStatus(m.status as MatchStatus);
+
+      const { data: players } = await supabase
+        .from("match_players")
+        .select("user_id, joined_at")
+        .eq("match_id", matchId)
+        .order("joined_at", { ascending: true });
+      if (players) setSeats(players.map((p) => p.user_id as string));
+
       const { data: g } = await supabase.from("shelem_games").select("*").eq("match_id", matchId).maybeSingle();
       if (g) setState(g as PublicState);
       const { data: h } = await supabase
@@ -92,6 +108,9 @@ export default function ShelemPage() {
 
     const channel = supabase
       .channel(`shelem-${matchId}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "matches", filter: `id=eq.${matchId}` }, (payload) =>
+        setMatchStatus((payload.new as { status: MatchStatus }).status)
+      )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "shelem_games", filter: `match_id=eq.${matchId}` },
@@ -110,9 +129,13 @@ export default function ShelemPage() {
   }, [matchId, userId]);
 
   useEffect(() => {
-    if (!state) return;
-    if (state.phase === "bidding") {
-      setStatus(state.current_turn === userId ? "نوبت پیشنهاد توئه" : "منتظر پیشنهاد بقیه...");
+    if (matchStatus === "waiting") {
+      setStatus("در انتظار ۴ بازیکن...");
+      return;
+    }
+    const currentBidder = state?.current_turn ?? seats[0];
+    if (!state || state.phase === "bidding") {
+      setStatus(currentBidder === userId ? "نوبت پیشنهاد توئه" : "منتظر پیشنهاد بقیه...");
     } else if (state.phase === "choosing_trump") {
       setStatus(state.bid_winner === userId ? "خالتو انتخاب کن" : "منتظر انتخاب حکم...");
     } else if (state.phase === "playing") {
@@ -121,7 +144,7 @@ export default function ShelemPage() {
       const myTeam: "A" | "B" | null = state.teams.A.includes(userId ?? "") ? "A" : state.teams.B.includes(userId ?? "") ? "B" : null;
       setStatus(state.result?.winner === myTeam ? `تیم شما برد! (پیشنهاد ${state.result?.bid}) 🏆` : `تیم شما باخت (پیشنهاد ${state.result?.bid})`);
     }
-  }, [state, userId]);
+  }, [matchStatus, state, seats, userId]);
 
   const placeBid = async (bid: number | null) => {
     setError(null);
@@ -148,6 +171,8 @@ export default function ShelemPage() {
   };
 
   const myTurn = state?.current_turn === userId;
+  const currentBidder = state?.current_turn ?? seats[0];
+  const canBid = matchStatus === "active" && (!state || state.phase === "bidding") && currentBidder === userId;
   const bidOptions = Array.from({ length: 7 }, (_, i) => 7 + i).filter((n) => n > (state?.highest_bid ?? 6));
 
   return (
@@ -170,7 +195,7 @@ export default function ShelemPage() {
         </p>
       )}
 
-      {state?.phase === "bidding" && myTurn && (
+      {canBid && (
         <div className="flex flex-wrap gap-2 justify-center">
           {bidOptions.map((n) => (
             <button key={n} onClick={() => placeBid(n)} className="px-3 py-1 rounded border border-white/10">
@@ -186,12 +211,7 @@ export default function ShelemPage() {
       {state?.phase === "choosing_trump" && state.bid_winner === userId && (
         <div className="flex gap-2">
           {(["S", "H", "D", "C"] as Suit[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => chooseTrump(s)}
-              className="w-12 h-12 rounded-lg border border-white/10 text-xl"
-              style={{ color: SUIT_COLOR[s] }}
-            >
+            <button key={s} onClick={() => chooseTrump(s)} className="w-12 h-12 rounded-lg border border-white/10 text-xl" style={{ color: SUIT_COLOR[s] }}>
               {SUIT_LABEL[s]}
             </button>
           ))}
@@ -208,7 +228,12 @@ export default function ShelemPage() {
 
       <div className="flex flex-wrap gap-2 justify-center max-w-lg">
         {hand.map((c) => (
-          <button key={c} onClick={() => myTurn && state?.phase === "playing" && playCard(c)} disabled={!myTurn || state?.phase !== "playing"} className="disabled:opacity-50">
+          <button
+            key={c}
+            onClick={() => myTurn && state?.phase === "playing" && playCard(c)}
+            disabled={!myTurn || state?.phase !== "playing"}
+            className="disabled:opacity-50"
+          >
             <CardView card={c} />
           </button>
         ))}

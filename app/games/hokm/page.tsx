@@ -1,22 +1,17 @@
 "use client";
 
 // app/games/hokm/page.tsx
-//
-// Same shape as chess/rps pages:
-//   1. find_or_create_hokm_match() — waits for 4 players instead of 2
-//   2. subscribe to hokm_games (public state: whose turn, trump, trick, score)
-//   3. subscribe to hokm_hands filtered to this user (RLS guarantees this
-//      is the ONLY row this client can ever receive — opponents' hands
-//      never reach the browser, even over the realtime channel)
-//   4. call the hokm-action Edge Function for choose_trump / play_card
-//
-// NOTE ON IMPORTS: matches this repo's client at "@/lib/supabase/client".
-// Adjust if your project uses a different path.
+// BUGFIX: same deadlock family — the trump-choice button only showed when
+// state.hakem === userId, but `state` doesn't exist until someone acts.
+// Fixed by independently tracking match status + seating order (seats[0]
+// is always the hakem, per the Edge Function's convention) so the hakem
+// can make the very first move.
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import GameNav from "@/components/GameNav";
 
+type MatchStatus = "waiting" | "active" | "finished";
 type Phase = "bidding" | "playing" | "finished";
 type Suit = "S" | "H" | "D" | "C";
 
@@ -37,7 +32,7 @@ type PublicState = {
   result: { winner: "A" | "B" } | null;
 };
 
-const STAKE = 0; // wired to 0 until the payment decision from README §5 is resolved
+const STAKE = 0;
 
 function Card({ card }: { card: string }) {
   const rank = card.slice(0, -1);
@@ -56,12 +51,13 @@ function Card({ card }: { card: string }) {
 export default function HokmPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [matchId, setMatchId] = useState<string | null>(null);
+  const [matchStatus, setMatchStatus] = useState<MatchStatus>("waiting");
+  const [seats, setSeats] = useState<string[]>([]); // join order — seats[0] is always the hakem
   const [state, setState] = useState<PublicState | null>(null);
   const [hand, setHand] = useState<string[]>([]);
   const [status, setStatus] = useState("در حال اتصال...");
   const [error, setError] = useState<string | null>(null);
 
-  // 1. auth + matchmaking
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -72,9 +68,7 @@ export default function HokmPage() {
       setUserId(user.id);
 
       setStatus("در انتظار ۴ بازیکن...");
-      const { data: id, error } = await supabase.rpc("find_or_create_hokm_match", {
-        p_stake: STAKE,
-      });
+      const { data: id, error } = await supabase.rpc("find_or_create_hokm_match", { p_stake: STAKE });
       if (error || cancelled) {
         setStatus("خطا در matchmaking: " + error?.message);
         return;
@@ -86,11 +80,20 @@ export default function HokmPage() {
     };
   }, []);
 
-  // 2. subscribe to public state + my hand
   useEffect(() => {
     if (!matchId || !userId) return;
 
     const fetchInitial = async () => {
+      const { data: m } = await supabase.from("matches").select("status").eq("id", matchId).single();
+      if (m) setMatchStatus(m.status as MatchStatus);
+
+      const { data: players } = await supabase
+        .from("match_players")
+        .select("user_id, joined_at")
+        .eq("match_id", matchId)
+        .order("joined_at", { ascending: true });
+      if (players) setSeats(players.map((p) => p.user_id as string));
+
       const { data: g } = await supabase.from("hokm_games").select("*").eq("match_id", matchId).maybeSingle();
       if (g) setState(g as PublicState);
 
@@ -106,19 +109,15 @@ export default function HokmPage() {
 
     const channel = supabase
       .channel(`hokm-${matchId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "hokm_games", filter: `match_id=eq.${matchId}` },
-        (payload) => setState(payload.new as PublicState)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "matches", filter: `id=eq.${matchId}` }, (payload) =>
+        setMatchStatus((payload.new as { status: MatchStatus }).status)
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "hokm_games", filter: `match_id=eq.${matchId}` }, (payload) =>
+        setState(payload.new as PublicState)
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "hokm_hands",
-          filter: `match_id=eq.${matchId}`, // RLS still restricts this to MY row only
-        },
+        { event: "*", schema: "public", table: "hokm_hands", filter: `match_id=eq.${matchId}` },
         (payload) => setHand((payload.new as { cards: string[] }).cards)
       )
       .subscribe();
@@ -129,14 +128,20 @@ export default function HokmPage() {
   }, [matchId, userId]);
 
   useEffect(() => {
-    if (!state) return;
-    if (state.phase === "bidding") setStatus(state.hakem === userId ? "خالتو انتخاب کن (حاکم تویی)" : "منتظر انتخاب حکم توسط حاکم...");
-    if (state.phase === "playing") setStatus(state.current_turn === userId ? "نوبت توئه" : "منتظر نوبت...");
-    if (state.phase === "finished") {
+    if (matchStatus === "waiting") {
+      setStatus("در انتظار ۴ بازیکن...");
+      return;
+    }
+    const hakem = state?.hakem ?? seats[0];
+    if (!state || state.phase === "bidding") {
+      setStatus(hakem === userId ? "خالتو انتخاب کن (حاکم تویی)" : "منتظر انتخاب حکم توسط حاکم...");
+    } else if (state.phase === "playing") {
+      setStatus(state.current_turn === userId ? "نوبت توئه" : "منتظر نوبت...");
+    } else if (state.phase === "finished") {
       const myTeam: "A" | "B" | null = state.teams.A.includes(userId ?? "") ? "A" : state.teams.B.includes(userId ?? "") ? "B" : null;
       setStatus(state.result?.winner === myTeam ? "تیم شما برد! 🏆" : "تیم شما باخت");
     }
-  }, [state, userId]);
+  }, [matchStatus, state, seats, userId]);
 
   const chooseTrump = async (trump: Suit) => {
     setError(null);
@@ -155,6 +160,8 @@ export default function HokmPage() {
   };
 
   const myTurn = state?.current_turn === userId;
+  const isHakem = (state?.hakem ?? seats[0]) === userId;
+  const canChooseTrump = matchStatus === "active" && (!state || state.phase === "bidding") && isHakem;
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
@@ -165,19 +172,15 @@ export default function HokmPage() {
 
       {state?.trump && (
         <p className="text-sm">
-          حکم: <span style={{ color: SUIT_COLOR[state.trump] }}>{SUIT_LABEL[state.trump]}</span> — دست‌های برده‌شده: A {state.tricks_won.A} / B {state.tricks_won.B}
+          حکم: <span style={{ color: SUIT_COLOR[state.trump] }}>{SUIT_LABEL[state.trump]}</span> — دست‌های برده‌شده: A {state.tricks_won.A} / B{" "}
+          {state.tricks_won.B}
         </p>
       )}
 
-      {state?.phase === "bidding" && state.hakem === userId && (
+      {canChooseTrump && (
         <div className="flex gap-2">
           {(["S", "H", "D", "C"] as Suit[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => chooseTrump(s)}
-              className="w-12 h-12 rounded-lg border border-white/10 text-xl"
-              style={{ color: SUIT_COLOR[s] }}
-            >
+            <button key={s} onClick={() => chooseTrump(s)} className="w-12 h-12 rounded-lg border border-white/10 text-xl" style={{ color: SUIT_COLOR[s] }}>
               {SUIT_LABEL[s]}
             </button>
           ))}

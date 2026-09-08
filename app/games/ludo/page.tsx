@@ -1,12 +1,15 @@
 "use client";
 
 // app/games/ludo/page.tsx
-// Simplified 4-player ludo: one token per player, private 57-square track,
-// no captures. Same shape as the snake_ladder page but for 4 players.
+// BUGFIX: same deadlock as snake_ladder — see the comment there. Fixed by
+// tracking match status + seating order independently of the lazily
+// created ludo_games row.
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import GameNav from "@/components/GameNav";
+
+type MatchStatus = "waiting" | "active" | "finished";
 
 type BoardState = {
   positions: Record<string, number>;
@@ -22,6 +25,8 @@ const FINISH = 57;
 export default function LudoPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [matchId, setMatchId] = useState<string | null>(null);
+  const [matchStatus, setMatchStatus] = useState<MatchStatus>("waiting");
+  const [seats, setSeats] = useState<string[]>([]);
   const [board, setBoard] = useState<BoardState | null>(null);
   const [status, setStatus] = useState("در حال اتصال...");
   const [error, setError] = useState<string | null>(null);
@@ -51,9 +56,18 @@ export default function LudoPage() {
 
   useEffect(() => {
     if (!matchId) return;
-    setStatus("در انتظار بقیه‌ی بازیکن‌ها...");
 
     const fetchInitial = async () => {
+      const { data: m } = await supabase.from("matches").select("status").eq("id", matchId).single();
+      if (m) setMatchStatus(m.status as MatchStatus);
+
+      const { data: players } = await supabase
+        .from("match_players")
+        .select("user_id, joined_at")
+        .eq("match_id", matchId)
+        .order("joined_at", { ascending: true });
+      if (players) setSeats(players.map((p) => p.user_id as string));
+
       const { data } = await supabase.from("ludo_games").select("*").eq("match_id", matchId).maybeSingle();
       if (data) setBoard(data as BoardState);
     };
@@ -61,6 +75,11 @@ export default function LudoPage() {
 
     const channel = supabase
       .channel(`ludo-${matchId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "matches", filter: `id=eq.${matchId}` },
+        (payload) => setMatchStatus((payload.new as { status: MatchStatus }).status)
+      )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "ludo_games", filter: `match_id=eq.${matchId}` },
@@ -74,10 +93,17 @@ export default function LudoPage() {
   }, [matchId]);
 
   useEffect(() => {
-    if (!board) return;
-    if (board.status === "finished") setStatus("بازی تمام شد");
-    else setStatus(board.current_turn === userId ? "نوبت توئه — تاس بنداز" : "منتظر نوبت...");
-  }, [board, userId]);
+    if (matchStatus === "waiting") {
+      setStatus("در انتظار بقیه‌ی بازیکن‌ها...");
+      return;
+    }
+    if (board?.status === "finished") {
+      setStatus("بازی تمام شد");
+      return;
+    }
+    const myTurn = board ? board.current_turn === userId : seats[0] === userId;
+    setStatus(myTurn ? "نوبت توئه — تاس بنداز" : "منتظر نوبت...");
+  }, [matchStatus, board, seats, userId]);
 
   const roll = async () => {
     setError(null);
@@ -88,7 +114,11 @@ export default function LudoPage() {
     else if (data?.winner) setStatus(data.winner === userId ? "بردی! 🏆" : "یکی دیگه برد");
   };
 
-  const others = board?.turn_order.filter((id) => id !== userId) ?? [];
+  const others = (board?.turn_order ?? seats).filter((id) => id !== userId);
+  const canRoll =
+    matchStatus === "active" &&
+    board?.status !== "finished" &&
+    (board ? board.current_turn === userId : seats[0] === userId);
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
@@ -100,14 +130,13 @@ export default function LudoPage() {
       <div className="w-full max-w-sm space-y-2">
         <div className="flex justify-between text-sm">
           <span>شما</span>
-          <span>{board && userId ? board.positions[userId] ?? 0 : 0} / {FINISH}</span>
+          <span>
+            {board && userId ? board.positions[userId] ?? 0 : 0} / {FINISH}
+          </span>
         </div>
         {board && userId && (
           <div className="h-2 rounded bg-white/10">
-            <div
-              className="h-2 rounded bg-gold"
-              style={{ width: `${((board.positions[userId] ?? 0) / FINISH) * 100}%` }}
-            />
+            <div className="h-2 rounded bg-gold" style={{ width: `${((board.positions[userId] ?? 0) / FINISH) * 100}%` }} />
           </div>
         )}
 
@@ -115,13 +144,12 @@ export default function LudoPage() {
           <div key={id}>
             <div className="flex justify-between text-xs text-text-3">
               <span>حریف</span>
-              <span>{board?.positions[id] ?? 0} / {FINISH}</span>
+              <span>
+                {board?.positions[id] ?? 0} / {FINISH}
+              </span>
             </div>
             <div className="h-1.5 rounded bg-white/5">
-              <div
-                className="h-1.5 rounded bg-white/30"
-                style={{ width: `${((board?.positions[id] ?? 0) / FINISH) * 100}%` }}
-              />
+              <div className="h-1.5 rounded bg-white/30" style={{ width: `${((board?.positions[id] ?? 0) / FINISH) * 100}%` }} />
             </div>
           </div>
         ))}
@@ -129,11 +157,7 @@ export default function LudoPage() {
 
       {board?.last_roll && <p className="text-2xl">🎲 {board.last_roll}</p>}
 
-      <button
-        onClick={roll}
-        disabled={rolling || board?.status === "finished" || board?.current_turn !== userId}
-        className="rounded-lg border border-white/10 px-6 py-3 disabled:opacity-40"
-      >
+      <button onClick={roll} disabled={rolling || !canRoll} className="rounded-lg border border-white/10 px-6 py-3 disabled:opacity-40">
         {rolling ? "..." : "تاس بنداز"}
       </button>
     </div>
