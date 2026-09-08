@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
+import GameNav from "@/components/GameNav";
 
 type Suit = "S" | "H" | "D" | "C";
 const SUIT_LABEL: Record<Suit, string> = { S: "♠", H: "♥", D: "♦", C: "♣" };
@@ -137,6 +138,7 @@ export default function PokerPage() {
   if (!tableSize) {
     return (
       <div className="flex flex-col items-center gap-4 p-6">
+        <GameNav />
         <h1 className="text-xl font-bold">Poker</h1>
         <p className="text-sm text-gray-500">میز چند نفره؟</p>
         <div className="flex gap-3">
@@ -152,6 +154,7 @@ export default function PokerPage() {
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
+      <GameNav />
       <h1 className="text-xl font-bold">Poker ({tableSize} نفره)</h1>
       <p className="text-sm text-gray-500">{status}</p>
       {error && <p className="text-xs text-red-500">{error}</p>}

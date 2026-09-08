@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
+import GameNav from "@/components/GameNav";
 
 type BoardState = {
   positions: Record<string, number>;
@@ -91,6 +92,7 @@ export default function LudoPage() {
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
+      <GameNav />
       <h1 className="text-xl font-bold">Ludo</h1>
       <p className="text-sm text-gray-500">{status}</p>
       {error && <p className="text-xs text-red-500">{error}</p>}
