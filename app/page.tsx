@@ -12,12 +12,13 @@ export default function HomePage() {
   return (
     <div>
       <div className="rounded-2xl border border-white/5 bg-surface-alt p-5 mb-8">
-        <p className="text-xs text-gold font-semibold mb-1">Starter build</p>
-        <h1 className="font-display text-xl font-semibold mb-2">Rock, paper, scissors is fully wired up</h1>
+        <p className="text-xs text-gold font-semibold mb-1">Game Arena</p>
+        <h1 className="font-display text-xl font-semibold mb-2">Seven games, all wired up to real Supabase Auth and realtime</h1>
         <p className="text-sm text-text-2 leading-relaxed">
-          It uses real Supabase Auth, a live match table, and a server-side function that resolves
-          the round so neither player can see the other's move early. Use it as the reference
-          pattern for wiring up chess, poker, and the rest.
+          Every game below uses live matchmaking, a Postgres-backed match table, and server-side
+          logic that resolves moves so no player can see hidden information (an opponent&apos;s
+          move, hand, or dice roll) before it&apos;s revealed. Wallet payouts are wired to a fixed
+          per-match stake — real-money deposits/withdrawals are intentionally not connected yet.
         </p>
       </div>
       <p className="text-sm font-semibold mb-3">Games</p>

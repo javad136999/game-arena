@@ -16,7 +16,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chess, type Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
-   import { supabase } from "@/lib/supabase/client";
+import { supabase } from "@/lib/supabase/client";
+import GameNav from "@/components/GameNav";
 type MatchStatus = "waiting" | "active" | "finished";
 
 type MatchRow = {
@@ -167,6 +168,7 @@ export default function ChessPage() {
 
   return (
     <div className="flex flex-col items-center gap-4 p-6">
+      <GameNav />
       <h1 className="text-xl font-bold">Chess</h1>
       <p className="text-sm text-gray-500">{status}</p>
       {myColor && <p className="text-xs text-gray-400">شما: {myColor === "w" ? "سفید" : "سیاه"}</p>}
