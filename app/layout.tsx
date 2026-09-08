@@ -1,12 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Link from "next/link";
-
+import UserNav from "@/components/UserNav";
 export const metadata: Metadata = {
   title: "Game Arena",
   description: "Multiplayer board and card games with a shared wallet."
 };
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -23,12 +22,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Link href="/" className="font-display text-lg font-semibold text-gold">
             Arena
           </Link>
-          <nav className="flex gap-5 text-sm text-text-2">
+          <nav className="flex gap-5 text-sm text-text-2 items-center">
             <Link href="/">Home</Link>
             <Link href="/games/rps">Play RPS</Link>
             <Link href="/wallet">Wallet</Link>
             <Link href="/profile">Profile</Link>
-            <Link href="/login">Log in</Link>
+            <UserNav />
           </nav>
         </header>
         <main className="max-w-3xl mx-auto px-6 py-10">{children}</main>
